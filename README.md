@@ -1,7 +1,9 @@
 GoatProxy
 =========
 
-A small HTTP proxy written in Go
+A small HTTP proxy written in Go.
+
+This tool is still very much pre-alpha, and won't work for anything more than light REST proxying.
 
 ## Usage
 
