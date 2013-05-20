@@ -90,16 +90,16 @@ myApp.controller("MainController", function ($scope, socket) {
                         result = '';
 
                         values = e.httpev.Form
-                        for (var i in values) {
-                            result += '<p>'
+                            for (var i in values) {
+                                result += '<p>'
 
-                            if (boundary !== undefined) {
-                                result += boundary + '<br />';
+                                    if (boundary !== undefined) {
+                                        result += boundary + '<br />';
+                                    }
+
+                                result += i + '=' + values[i];
+                                result += '</p>';
                             }
-
-                            result += i + '=' + values[i];
-                            result += '</p>';
-                        }
 
                         return result;
                     }
