@@ -34,6 +34,19 @@ myApp.controller("MainController", function ($scope, socket) {
 	}
 
 	$scope.renderBody = function(e) {
+        function formLength(obj) {
+            var size = 0, key;
+            for (key in obj) {
+                if (obj.hasOwnProperty(key)) size++;
+            }
+
+            return size;
+        }
+
+        function replaceAll(find, replace, str) {
+            return str.replace(new RegExp(find, 'g'), replace);
+        }
+
         function syntaxHighlight(json) {
             if (typeof json != 'string') {
                  json = JSON.stringify(json, undefined, 2);
@@ -56,14 +69,40 @@ myApp.controller("MainController", function ($scope, socket) {
             });
         }
 
-        console.log(e.body);
         if (e.httpev.Header !== undefined && e.httpev.Header['Content-Type'] !== undefined) {
-            if (e.httpev.Header['Content-Type'][0] == "application/json") {
-                return syntaxHighlight(JSON.stringify(angular.fromJson(e.body), undefined, 2));
-            } else if (e.httpev.Header['Content-Type'][0] == "text/html") {
-                return e.body;
-            } else if (e.httpev.Header['Content-Type'][0] == "text/plain") {
-                return e.body;
+            type = e.httpev.Header['Content-Type'][0].split(';')[0];
+
+            switch(type) {
+                case "application/json":
+                    return syntaxHighlight(JSON.stringify(angular.fromJson(e.body), undefined, 2));
+                case "application/xml":
+                case "text/html":
+                    var result = replaceAll("<","&lt", e.body);
+                    result = replaceAll(">","&gt", result);
+                    console.log(result);
+                    return result;
+                case "text/plain":
+                    return e.body;
+                case "multipart/form-data":
+                    var boundary = e.httpev.Header['Content-Type'][0].split(';')[1].replace(/ /g,'');;
+                case "application/x-www-form-urlencoded":
+                    if (e.httpev.Form !== undefined && formLength(e.httpev.Form) > 0) {
+                        result = '';
+
+                        values = e.httpev.Form
+                        for (var i in values) {
+                            result += '<p>'
+
+                            if (boundary !== undefined) {
+                                result += boundary + '<br />';
+                            }
+
+                            result += i + '=' + values[i];
+                            result += '</p>';
+                        }
+
+                        return result;
+                    }
             }
         }
 	}
@@ -73,11 +112,11 @@ myApp.controller("MainController", function ($scope, socket) {
 
         var request = null;
         if (e.Request === undefined) {
-            request = e
+            request = e;
             result += "<i class='icon-chevron-right'></i>&nbsp;&nbsp;";
 
             result += request.Method + " ";
-            result += request.RequestURI;
+            result += request.URL.Path;
         } else {
             result += "<i class='icon-chevron-left'></i>&nbsp;&nbsp;";
 

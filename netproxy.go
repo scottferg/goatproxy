@@ -1,14 +1,12 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"flag"
 	"fmt"
-	"net"
+	"io"
+	"io/ioutil"
 	"net/http"
 	"os"
-	"strings"
 )
 
 var (
@@ -17,131 +15,77 @@ var (
 	listen_port *string = flag.String("listen_port", "0", "listen port")
 	with_ui     *bool   = flag.Bool("with_ui", false, "launch web UI")
 
-	lastRequest *http.Request
-
-	methods = []string{
-		"GET",
-		"PUT",
-		"POST",
-		"DELETE",
-		"HEAD",
-		"PATCH",
-		"OPTIONS",
-	}
+	ui *WebUI
 )
 
-type ProxyConnection struct {
-	from, to net.Conn
-	logger   chan interface{}
-	ack      chan bool
-}
-
-func die(format string, v ...interface{}) {
-	os.Stderr.WriteString(fmt.Sprintf(format+"\n", v...))
-	os.Exit(1)
-}
-
-func renderPackets(buf *bytes.Buffer) interface{} {
-	reader := bufio.NewReader(buf)
-
-	for _, v := range methods {
-		if strings.Index(string(buf.Bytes())[:10], v) > -1 {
-			req, _ := http.ReadRequest(reader)
-			lastRequest = req
-			fmt.Println(formattedRequest(req))
-			return req
-		}
-	}
-
-	resp, _ := http.ReadResponse(reader, lastRequest)
-	fmt.Println(formattedResponse(resp))
-	return resp
-}
-
-func proxy(c *ProxyConnection) {
-	/*
-		from := c.from.LocalAddr().String()
-		to := c.to.LocalAddr().String()
-	*/
-
-	b := make([]byte, 10246)
-	buf := new(bytes.Buffer)
-
-	var totalPackets int
-	var totalBytes int
-
-	for {
-		numBytes, err := c.from.Read(b)
-		if err != nil {
-			break
-		}
-
-		if numBytes > 0 {
-			buf.Write(b[:numBytes])
-			c.to.Write(b[:numBytes])
-			totalPackets++
-		}
-
-		totalBytes += numBytes
-	}
-
-	c.logger <- renderPackets(buf)
-	// c.logger <- yellowBold(fmt.Sprintf("%d bytes sent from %s to %s\r\n", totalBytes, from, to))
-
-	c.from.Close()
-	c.to.Close()
-	c.ack <- true
-}
-
-func runUiServer(logger chan interface{}, target string) {
-	w := WebUI{
+func runUiServer() {
+	ui = &WebUI{
 		from: *listen_port,
-		to:   target,
+		to:   fmt.Sprintf("%s:%s", *host, *port),
 	}
-	w.Init()
+	ui.Init()
 
 	for {
-		b := <-logger
-		if b == nil {
-			return
-		}
-
-		w.Update(b)
+		select {}
 	}
 }
 
-func handleConnection(local net.Conn, target string, logger chan interface{}) {
-	remote, err := net.Dial("tcp", target)
-	if err != nil {
-		fmt.Printf("Unable to connect to %s, %v\n", target, err)
+func doForwardTraffic(in chan *http.Request, out chan *http.Response, ack chan interface{}) {
+	host := fmt.Sprintf("%s:%s", *host, *port)
+	client := &http.Client{}
+
+	var resp *http.Response
+	for {
+		req := <-in
+		req.RequestURI = ""
+
+		req.ParseMultipartForm(0)
+
+		var err error
+		if req.Method == "POST" {
+			resp, err = http.PostForm(fmt.Sprintf("http://%s%s", host, req.URL.RequestURI()), req.Form)
+			if err != nil {
+				fmt.Println(err.Error())
+			}
+		} else {
+			var forwardReq *http.Request
+
+			forwardReq, err = http.NewRequest(req.Method, fmt.Sprintf("http:%s", req.URL.String()), nil)
+			forwardReq.URL.Host = host
+			forwardReq.Header = req.Header
+
+			resp, err = client.Do(forwardReq)
+			if err != nil {
+				fmt.Println(err.Error())
+			}
+		}
+
+		ui.Update(req, nil)
+
+		out <- resp
+		ack <- req
 	}
+}
 
-	// started := time.Now()
+func doListenTraffic(in chan *http.Response, out chan *http.Request, ack chan interface{}) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		out <- r
 
-	reqack := make(chan bool)
-	respack := make(chan bool)
+		resp := <-in
 
-	go proxy(&ProxyConnection{
-		from:   remote,
-		to:     local,
-		logger: logger,
-		ack:    respack,
+		reader := io.TeeReader(resp.Body, w)
+		body, _ := ioutil.ReadAll(reader)
+
+		ui.Update(resp, body)
+
+		ack <- resp
 	})
 
-	go proxy(&ProxyConnection{
-		from:   local,
-		to:     remote,
-		logger: logger,
-		ack:    reqack,
-	})
-
-	<-reqack
-	<-respack
-
-	// finished := time.Now()
-	// duration := finished.Sub(started)
-
-	// logger <- fmt.Sprintf("Duration %s\n", duration.String())
+	err := http.ListenAndServe(fmt.Sprintf(":%s", *listen_port), mux)
+	if err != nil {
+		panic("ListenAndServe: " + err.Error())
+	}
 }
 
 func main() {
@@ -153,26 +97,36 @@ func main() {
 		os.Exit(1)
 	}
 
-	target := net.JoinHostPort(*host, *port)
-	fmt.Printf("Listening on port %s, forwarding to %s\n", *listen_port, target)
+	closer := make(chan interface{})
+	incomingFrom := make(chan *http.Request)
+	outgoingFrom := make(chan *http.Response)
 
-	logger := make(chan interface{})
+	go doListenTraffic(outgoingFrom, incomingFrom, closer)
+
+	incomingTo := make(chan *http.Request)
+	outgoingTo := make(chan *http.Response)
+
+	go doForwardTraffic(incomingTo, outgoingTo, closer)
+
+	fmt.Sprintf("Listening on port %s, forwarding to %s:%s\n", *listen_port, *host, *port)
 
 	if *with_ui {
-		go runUiServer(logger, target)
-	}
-
-	ln, err := net.Listen("tcp", ":"+*listen_port)
-	if err != nil {
-		fmt.Printf("Unable to start listener, %v\n", err)
-		os.Exit(1)
+		go runUiServer()
 	}
 
 	for {
-		if conn, err := ln.Accept(); err == nil {
-			go handleConnection(conn, target, logger)
-		} else {
-			fmt.Printf("Accept failed, %v\n", err)
+		select {
+		case req := <-incomingFrom:
+			incomingTo <- req
+		case resp := <-outgoingTo:
+			outgoingFrom <- resp
+		case ack := <-closer:
+			switch v := ack.(type) {
+			case *http.Response:
+				v.Body.Close()
+			case *http.Request:
+				v.Body.Close()
+			}
 		}
 	}
 }

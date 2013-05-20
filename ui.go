@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"os/exec"
 	"strings"
@@ -47,6 +46,7 @@ func readResponseBody(body []byte, contentType string) string {
 
 	switch contentType {
 	case "application/json":
+		fmt.Println("JSON response")
 		_ = json.Unmarshal(body, &objmap)
 
 		res, _ := json.MarshalIndent(objmap, "", "    ")
@@ -63,16 +63,13 @@ func readResponseBody(body []byte, contentType string) string {
 	return ""
 }
 
-func (d *WebUI) Update(state interface{}) {
+func (d *WebUI) Update(op interface{}, body []byte) {
 	if d.websocket != nil {
 		e := Event{
-			Event: state,
+			Event: op,
 		}
 
-		if v, ok := state.(*http.Response); ok {
-			body, _ := ioutil.ReadAll(v.Body)
-			defer v.Body.Close()
-
+		if v, ok := op.(*http.Response); ok {
 			var contentType string
 			if c, ok := v.Header["Content-Type"]; ok {
 				contentType = strings.Split(c[0], ";")[0]
@@ -81,10 +78,7 @@ func (d *WebUI) Update(state interface{}) {
 			}
 
 			e.Body = readResponseBody(body, contentType)
-		} else if v, ok := state.(*http.Request); ok {
-			body, _ := ioutil.ReadAll(v.Body)
-			defer v.Body.Close()
-
+		} else if v, ok := op.(*http.Request); ok {
 			var contentType string
 			if c, ok := v.Header["Content-Type"]; ok {
 				contentType = strings.Split(c[0], ";")[0]
@@ -93,10 +87,7 @@ func (d *WebUI) Update(state interface{}) {
 			}
 
 			e.Body = readResponseBody(body, contentType)
-			fmt.Println(v.Form)
 		}
-
-		fmt.Println(e.Body)
 
 		websocket.JSON.Send(d.websocket, Message{
 			Type:    "proxy-update",
@@ -133,11 +124,11 @@ func (d *WebUI) SockServer(ws *websocket.Conn) {
 }
 
 func (d *WebUI) RunServer() {
-	http.Handle("/js/", http.FileServer(http.Dir(".")))
-	http.Handle("/font/", http.FileServer(http.Dir(".")))
-	http.Handle("/css/", http.FileServer(http.Dir(".")))
+	http.Handle("/js/", http.FileServer(http.Dir("./static/")))
+	http.Handle("/font/", http.FileServer(http.Dir("./static/")))
+	http.Handle("/css/", http.FileServer(http.Dir("./static/")))
 	http.Handle("/socket", websocket.Handler(d.SockServer))
-	http.Handle("/", http.FileServer(http.Dir("./html/")))
+	http.Handle("/", http.FileServer(http.Dir("./static/html/")))
 
 	openUrl("http://localhost:5000")
 
