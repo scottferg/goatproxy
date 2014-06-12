@@ -102,16 +102,17 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) error {
 	reader := io.TeeReader(r.Body, buf)
 	defer r.Body.Close()
 
-	// Write new request to dest
-	var scheme string
-	switch r.URL.Scheme {
-	case "":
-		scheme = "http://"
-	default:
-		scheme = r.URL.Scheme
+	// Repair URI if necessary
+	uri := r.URL
+	if uri.Scheme == "" {
+		uri.Scheme = "http"
 	}
 
-	req, err := http.NewRequest(r.Method, fmt.Sprintf("%s%s%s", scheme, *host, r.URL.String()), reader)
+	if uri.Host == "" {
+		uri.Host = *host
+	}
+
+	req, err := http.NewRequest(r.Method, fmt.Sprintf("%s", uri.String()), reader)
 	if err != nil {
 		return err
 	}
