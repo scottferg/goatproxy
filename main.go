@@ -18,6 +18,7 @@ import (
 var (
 	host    *string = flag.String("host", "", "target host or address")
 	port    *string = flag.String("port", ":8080", "target port")
+	ssl     *bool   = flag.Bool("ssl", false, "whether or not to proxy an SSL connection")
 	latency *int    = flag.Int("latency", 0, "in milliseconds")
 )
 
@@ -30,8 +31,8 @@ func (e errorHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func prettyPrintBody(body *bytes.Buffer) ([]byte, error) {
-	buf := &bytes.Buffer{}
+func prettyPrintJsonBody(body *bytes.Buffer) ([]byte, error) {
+	buf := bytes.NewBuffer(nil)
 
 	if len(body.Bytes()) > 0 {
 		err := json.Indent(buf, body.Bytes(), "", "    ")
@@ -57,7 +58,7 @@ func prettyPrintRequest(r *http.Request, content string, body *bytes.Buffer) err
 
 	switch content {
 	case "application/json":
-		output, err = prettyPrintBody(body)
+		output, err = prettyPrintJsonBody(body)
 		if err != nil {
 			return err
 		}
@@ -85,7 +86,7 @@ func prettyPrintResponse(r *http.Response, content string, body *bytes.Buffer) e
 
 	switch content {
 	case "application/json":
-		output, err = prettyPrintBody(body)
+		output, err = prettyPrintJsonBody(body)
 		if err != nil {
 			return err
 		}
@@ -98,22 +99,24 @@ func prettyPrintResponse(r *http.Response, content string, body *bytes.Buffer) e
 }
 
 func proxyHandler(w http.ResponseWriter, r *http.Request) error {
-	buf := new(bytes.Buffer)
+	buf := bytes.NewBuffer(nil)
 	reader := io.TeeReader(r.Body, buf)
 	defer r.Body.Close()
 
 	// Repair URI if necessary
 	uri := r.URL
-	if uri.Scheme == "" {
+	switch {
+	case *ssl:
+		uri.Scheme = "https"
+	case uri.Scheme == "":
 		uri.Scheme = "http"
 	}
 
-	if uri.Host == "" {
-		uri.Host = *host
-	}
+	uri.Host = *host
 
-	req, err := http.NewRequest(r.Method, fmt.Sprintf("%s", uri.String()), reader)
+	req, err := http.NewRequest(r.Method, uri.String(), reader)
 	if err != nil {
+		fmt.Println("Making request")
 		return err
 	}
 	req.Header = r.Header
@@ -126,7 +129,12 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) error {
 	// Simulate latency
 	time.Sleep(time.Duration(*latency) * time.Millisecond)
 
-	err = prettyPrintRequest(r, resp.Header["Content-Type"][0], buf)
+	var content string
+	if len(r.Header["Content-Type"]) > 0 {
+		content = r.Header["Content-Type"][0]
+	}
+
+	err = prettyPrintRequest(r, content, buf)
 	if err != nil {
 		return err
 	}
@@ -155,7 +163,12 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
-	err = prettyPrintResponse(resp, resp.Header["Content-Type"][0], buf)
+	content = ""
+	if len(resp.Header["Content-Type"]) > 0 {
+		content = resp.Header["Content-Type"][0]
+	}
+
+	err = prettyPrintResponse(resp, content, buf)
 	if err != nil {
 		return err
 	}
@@ -167,7 +180,7 @@ func init() {
 	flag.Parse()
 
 	if flag.NFlag() < 1 {
-		fmt.Println("usage: netproxy -host target_host")
+		fmt.Println("usage: goatproxy -host target_host -ssl=false -latency=0")
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
